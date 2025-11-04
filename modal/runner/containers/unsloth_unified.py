@@ -16,8 +16,8 @@ Cost comparison (Modal pricing):
 import os
 from pathlib import Path
 
+import modal
 import sentry_sdk
-from modal import Mount
 
 from runner.engines.unsloth import UnslothEngine, UnslothParams, unsloth_image
 from runner.shared.common import stub
@@ -35,7 +35,7 @@ from shared.volumes import (
 
 # Create mount for modal directory (same as in __init__.py)
 modal_path = Path(__file__).parent.parent.parent
-code_mount = Mount.from_local_dir(modal_path, remote_path="/root")
+code_mount = modal.Mount.from_local_dir(modal_path, remote_path="/root")
 
 
 def _make_unsloth_container(

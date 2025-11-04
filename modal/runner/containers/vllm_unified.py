@@ -1,9 +1,9 @@
 import os
 from pathlib import Path
 
+import modal
 import modal.gpu
 import sentry_sdk
-from modal import Mount
 
 from runner.engines.vllm import VllmEngine, VllmParams, vllm_image
 from runner.shared.common import stub
@@ -23,7 +23,7 @@ from shared.volumes import (
 
 # Create mount for modal directory (same as in __init__.py)
 modal_path = Path(__file__).parent.parent.parent
-code_mount = Mount.from_local_dir(modal_path, remote_path="/root")
+code_mount = modal.Mount.from_local_dir(modal_path, remote_path="/root")
 
 # FAST_BOOT mode: Trade startup time for inference performance
 # - True (dev): Faster startup, slower inference (no CUDA graph compilation)
@@ -34,19 +34,20 @@ FAST_BOOT = is_env_dev()
 def _make_container(
     name: str,
     model_name: str,
-    gpu: str = "A100",  # Modal 0.64+: Use string like "A100", "A10G", or "any"
+    gpu: str = "T4",  # Default to T4 (cheapest option!)
     gpu_count: int = 1,
-    concurrent_inputs: int = 32,  # Increased from 8 for better throughput
+    concurrent_inputs: int = 16,  # Reduced for T4 (less VRAM)
     max_containers: int = None,
-    container_idle_timeout: int = 20 * 60,  # 20 minutes
+    container_idle_timeout: int = 10 * 60,  # 10 minutes (save costs on T4)
     keep_warm: int = None,
     **vllm_opts,
 ):
     """Helper function to create a container with the given GPU configuration.
 
     Modal 0.64+ GPU specification:
-    - gpu: String like "A100", "A10G", "T4", "any", or "H100"
+    - gpu: String like "T4", "A10G", "A100", "any", or "H100"
     - gpu_count: Number of GPUs for tensor parallelism
+    - T4 is the cheapest GPU (~$0.60/hour) perfect for GPTQ quantized models
     """
 
     num_gpus = gpu_count
@@ -133,10 +134,11 @@ _phi2 = "TheBloke/phi-2-GPTQ"
 VllmContainer_MicrosoftPhi2 = _make_container(
     name="VllmContainer_MicrosoftPhi2",
     model_name=_phi2,
-    gpu="A10G",  # Modal 0.64+: Use string instead of gpu object
+    gpu="T4",  # T4 ($0.60/hour) - GPTQ quantized fits perfectly!
     gpu_count=1,
-    concurrent_inputs=24,  # Increased: Small model can handle more concurrent requests
-    max_containers=5,
+    concurrent_inputs=16,  # T4 optimized: Small model, good concurrency
+    max_containers=10,  # More containers since T4 is cheaper
+    container_idle_timeout=5 * 60,  # 5 min - save costs
     quantization="GPTQ",
 )
 
@@ -144,11 +146,11 @@ _neural_chat = "TheBloke/neural-chat-7b-v3-1-GPTQ"
 VllmContainer_IntelNeuralChat7B = _make_container(
     name="VllmContainer_IntelNeuralChat7B",
     model_name=_neural_chat,
-    gpu="A10G",  # Modal 0.64+: Use string instead of gpu object
+    gpu="T4",  # T4 ($0.60/hour) - GPTQ 7B fits in 16GB
     gpu_count=1,
-    concurrent_inputs=16,  # Increased: Medium model, good concurrency
-    max_containers=5,
-    container_idle_timeout=2 * 60,
+    concurrent_inputs=12,  # T4 optimized: Medium model
+    max_containers=8,
+    container_idle_timeout=5 * 60,  # 5 min - save costs
     quantization="GPTQ",
 )
 
@@ -156,10 +158,11 @@ _psyfighter2 = "TheBloke/LLaMA2-13B-Psyfighter2-GPTQ"
 VllmContainer_KoboldAIPsyfighter2 = _make_container(
     name="VllmContainer_KoboldAIPsyfighter2",
     model_name=_psyfighter2,
-    gpu="A10G",  # Modal 0.64+: Use string instead of gpu object
+    gpu="T4",  # T4 ($0.60/hour) - GPTQ 13B fits with careful memory management
     gpu_count=1,
-    concurrent_inputs=12,  # Increased: Larger model, moderate concurrency
-    max_containers=5,
+    concurrent_inputs=8,  # T4 optimized: Larger model, lower concurrency
+    max_containers=6,
+    container_idle_timeout=5 * 60,  # 5 min - save costs
     quantization="GPTQ",
 )
 
