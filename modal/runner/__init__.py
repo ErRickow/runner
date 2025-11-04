@@ -2,7 +2,10 @@ from modal import Secret, asgi_app
 
 from runner.containers.vllm_unified import REGISTERED_CONTAINERS
 from runner.shared.clean import clean_models_volume
-from runner.shared.common import stub
+from runner.shared.common import app  # Modal 0.64+: app instead of stub
+
+# Keep stub as alias for backward compatibility
+stub = app
 from runner.shared.download import download_model, downloader_image
 from shared.images import BASE_IMAGE
 from shared.logging import get_logger, get_observability_secrets

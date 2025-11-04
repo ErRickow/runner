@@ -1,4 +1,4 @@
-from modal import Stub
+from modal import App
 
 from shared.config import Config
 
@@ -9,4 +9,8 @@ config = Config(
 
 BACKLOG_THRESHOLD = 30
 
-stub = Stub(config.name)
+# Modal 0.64+: Stub renamed to App
+app = App(config.name)
+
+# Backward compatibility alias
+stub = app
