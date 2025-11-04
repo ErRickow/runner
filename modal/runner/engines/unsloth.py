@@ -30,18 +30,32 @@ logger = get_logger(__name__)
 
 # Unsloth image - optimized for T4 GPUs
 # Unsloth is 2x faster and uses 60% less memory than standard inference
+# Install dependencies in correct order to avoid conflicts
 unsloth_image = add_observability(
     Image.from_registry(
         "nvidia/cuda:12.1.0-base-ubuntu22.04",
         add_python="3.11",
-    ).pip_install(
-        "unsloth[cu121-torch230] @ git+https://github.com/unslothai/unsloth.git",
-        "transformers>=4.36.0",
-        "torch>=2.3.0",
-        "xformers",
-        "bitsandbytes",
-        "sentry-sdk==2.17.0",
     )
+    # Step 0: Install git (required for pip install from git repos)
+    .apt_install("git")
+    # Step 1: Install PyTorch first (required base)
+    .pip_install(
+        "torch==2.5.1",
+        "torchvision==0.20.1",
+    )
+    # Step 2: Install core dependencies
+    .pip_install(
+        "transformers==4.46.0",
+        "accelerate==0.34.0",
+        "bitsandbytes==0.44.1",
+        "xformers==0.0.28.post2",
+    )
+    # Step 3: Install Unsloth from git (now all deps are ready)
+    .pip_install(
+        "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git",
+    )
+    # Step 4: Add observability
+    .pip_install("sentry-sdk==2.17.0")
 )
 
 with unsloth_image.imports():
