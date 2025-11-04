@@ -1,9 +1,9 @@
 import os
 from pathlib import Path
 
-import modal
 import modal.gpu
 import sentry_sdk
+from modal import Mount
 
 from runner.engines.vllm import VllmEngine, VllmParams, vllm_image
 from runner.shared.common import stub
@@ -20,9 +20,8 @@ from shared.volumes import (
 )
 
 # Create mount for modal directory (same as in __init__.py)
-# Modal 0.64+: Use modal.Mount instead of importing Mount
 modal_path = Path(__file__).parent.parent.parent
-code_mount = modal.Mount.from_local_dir(modal_path, remote_path="/root")
+code_mount = Mount.from_local_dir(modal_path, remote_path="/root")
 
 
 def _make_container(
