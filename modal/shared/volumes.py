@@ -2,8 +2,13 @@ from pathlib import Path
 
 from modal import Volume
 
+# Volume for model weights
 models_volume = Volume.from_name("models-volume", create_if_missing=True)
 models_path = Path("/models")
+
+# Volume for vLLM JIT compilation cache (faster cold starts)
+vllm_cache_volume = Volume.from_name("vllm-cache", create_if_missing=True)
+vllm_cache_path = Path("/root/.cache/vllm")
 
 
 def get_model_path(model_name: str):

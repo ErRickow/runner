@@ -28,12 +28,19 @@ from .base import BaseEngine
 logger = get_logger(__name__)
 
 
-# Updated to vLLM 0.6.3+ with latest optimizations
+# Updated to vLLM 0.10.2 with latest optimizations
+# Using CUDA 12.4 for better compatibility with latest vLLM
 vllm_image = add_observability(
     Image.from_registry(
-        "nvidia/cuda:12.1.0-base-ubuntu22.04",
+        "nvidia/cuda:12.4.0-devel-ubuntu22.04",
         add_python="3.11",
-    ).pip_install("vllm==0.6.3.post1", "sentry-sdk==2.17.0")
+    )
+    .pip_install(
+        "vllm==0.10.2",
+        "torch==2.5.1",  # Compatible with vLLM 0.10.2
+        "sentry-sdk==2.17.0",
+    )
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})  # Faster model downloads
 )
 
 with vllm_image.imports():
@@ -65,6 +72,7 @@ class VllmParams(BaseModel):
     revision: Optional[str] = None
     tokenizer_revision: Optional[str] = None
     quantization: Optional[str] = None
+    enforce_eager: Optional[bool] = None  # FAST_BOOT mode support
 
 
 class VllmEngine(BaseEngine):

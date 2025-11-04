@@ -17,11 +17,18 @@ from shared.volumes import (
     get_model_path,
     models_path,
     models_volume,
+    vllm_cache_volume,
+    vllm_cache_path,
 )
 
 # Create mount for modal directory (same as in __init__.py)
 modal_path = Path(__file__).parent.parent.parent
 code_mount = Mount.from_local_dir(modal_path, remote_path="/root")
+
+# FAST_BOOT mode: Trade startup time for inference performance
+# - True (dev): Faster startup, slower inference (no CUDA graph compilation)
+# - False (prod): Slower startup, faster inference (full CUDA graph compilation)
+FAST_BOOT = is_env_dev()
 
 
 def _make_container(
@@ -29,7 +36,7 @@ def _make_container(
     model_name: str,
     gpu: str = "A100",  # Modal 0.64+: Use string like "A100", "A10G", or "any"
     gpu_count: int = 1,
-    concurrent_inputs: int = 8,
+    concurrent_inputs: int = 32,  # Increased from 8 for better throughput
     max_containers: int = None,
     container_idle_timeout: int = 20 * 60,  # 20 minutes
     keep_warm: int = None,
@@ -72,6 +79,7 @@ def _make_container(
                     params=VllmParams(
                         model=str(model_path),
                         tensor_parallel_size=num_gpus,
+                        enforce_eager=FAST_BOOT,  # Skip CUDA compilation in dev
                         **vllm_opts,
                     ),
                 )
@@ -95,7 +103,10 @@ def _make_container(
 
     wrap = stub.cls(
         mounts=[code_mount],  # Mount modal directory for shared/ access
-        volumes={models_path: models_volume},
+        volumes={
+            models_path: models_volume,
+            vllm_cache_path: vllm_cache_volume,  # Cache JIT compilation artifacts
+        },
         image=vllm_image,
         # Default CPU memory is 128 on modal. Request more memory for larger
         # windows of vLLM's batch loading weights into GPU memory.
@@ -124,7 +135,7 @@ VllmContainer_MicrosoftPhi2 = _make_container(
     model_name=_phi2,
     gpu="A10G",  # Modal 0.64+: Use string instead of gpu object
     gpu_count=1,
-    concurrent_inputs=4,
+    concurrent_inputs=24,  # Increased: Small model can handle more concurrent requests
     max_containers=5,
     quantization="GPTQ",
 )
@@ -135,7 +146,7 @@ VllmContainer_IntelNeuralChat7B = _make_container(
     model_name=_neural_chat,
     gpu="A10G",  # Modal 0.64+: Use string instead of gpu object
     gpu_count=1,
-    concurrent_inputs=4,
+    concurrent_inputs=16,  # Increased: Medium model, good concurrency
     max_containers=5,
     container_idle_timeout=2 * 60,
     quantization="GPTQ",
@@ -147,7 +158,7 @@ VllmContainer_KoboldAIPsyfighter2 = _make_container(
     model_name=_psyfighter2,
     gpu="A10G",  # Modal 0.64+: Use string instead of gpu object
     gpu_count=1,
-    concurrent_inputs=4,
+    concurrent_inputs=12,  # Increased: Larger model, moderate concurrency
     max_containers=5,
     quantization="GPTQ",
 )
