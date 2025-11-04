@@ -1,5 +1,6 @@
 from pathlib import Path
-from modal import Secret, asgi_app, Mount
+from modal import Secret, asgi_app
+import modal
 
 # Import app first to register it
 from runner.shared.common import app
@@ -22,8 +23,9 @@ ALL_CONTAINERS = {**REGISTERED_CONTAINERS, **UNSLOTH_CONTAINERS}
 
 # Create mount for the modal directory to include both runner/ and shared/
 # This ensures shared/ is accessible in Modal containers
+# Modal 0.64+: Use modal.Mount instead of importing Mount
 modal_path = Path(__file__).parent.parent
-code_mount = Mount.from_local_dir(modal_path, remote_path="/root")
+code_mount = modal.Mount.from_local_dir(modal_path, remote_path="/root")
 
 
 @stub.function(
