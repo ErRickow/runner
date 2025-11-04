@@ -7,6 +7,10 @@ from runner.containers.vllm_unified import (
     QUANTIZED_MODELS,
     REGISTERED_CONTAINERS,
 )
+from runner.containers.unsloth_unified import (
+    UNSLOTH_CONTAINERS,
+    UNSLOTH_MODEL_MAP,
+)
 from runner.shared.common import BACKLOG_THRESHOLD
 from runner.shared.sampling_params import SamplingParams
 from shared.logging import get_logger
@@ -18,6 +22,10 @@ from shared.protocol import (
 from shared.volumes import does_model_exist, get_model_path
 
 logger = get_logger(__name__)
+
+
+# Combine all containers for easier lookup
+ALL_CONTAINERS = {**REGISTERED_CONTAINERS, **UNSLOTH_CONTAINERS}
 
 
 def _get_sampling_params(payload: Union[CompletionPayload, CompletionRequest]):
@@ -57,16 +65,31 @@ def completion(
     - Legacy format: {id, prompt, params: {...}, model, stream}
     - OpenAI format: {model, prompt, temperature, max_tokens, ...}
     """
-    # Some models are served quantized, so we try re-mapping them first
+    # Try re-mapping model names (supports both vLLM and Unsloth models)
+    original_model = payload.model
     model_name = payload.model
+
+    # 1. Check if it's a quantized vLLM model
     if model_name in QUANTIZED_MODELS:
         model_name = QUANTIZED_MODELS[model_name]
+
+    # 2. Check if it's an Unsloth model alias (e.g., "phi-2" → "microsoft/phi-2")
+    if model_name in UNSLOTH_MODEL_MAP:
+        model_name = UNSLOTH_MODEL_MAP[model_name]
+
+    # Determine which engine (vLLM or Unsloth)
+    is_unsloth = model_name in UNSLOTH_CONTAINERS
+    is_vllm = model_name in REGISTERED_CONTAINERS
+    engine_type = "Unsloth (T4)" if is_unsloth else "vLLM" if is_vllm else "Unknown"
 
     model_path = get_model_path(model_name)
     logger.info(
         "Received completion request",
         extra={
-            "model": str(model_path),
+            "original_model": original_model,
+            "resolved_model": model_name,
+            "model_path": str(model_path),
+            "engine": engine_type,
             "format": "legacy" if isinstance(payload, CompletionPayload) else "openai",
             "user-agent": request.headers.get("user-agent"),
             "referer": request.headers.get("referer"),
@@ -85,9 +108,19 @@ def completion(
             "model_not_found",
         )
 
-    container = REGISTERED_CONTAINERS.get(model_name)
+    # Try to find container from either vLLM or Unsloth registries
+    container = ALL_CONTAINERS.get(model_name)
+
     if container is None:
-        message = f"Unable to locate container type for model {model_name}"
+        available_models = {
+            "vllm_models": list(REGISTERED_CONTAINERS.keys()),
+            "unsloth_models": list(UNSLOTH_CONTAINERS.keys()),
+            "unsloth_aliases": list(UNSLOTH_MODEL_MAP.keys()),
+        }
+        message = (
+            f"Unable to locate container for model '{model_name}'. "
+            f"Available models: {available_models}"
+        )
         logger.error(message)
         return create_error_response(
             status.HTTP_400_BAD_REQUEST,

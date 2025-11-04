@@ -1,7 +1,9 @@
 import os
+from pathlib import Path
 
 import modal.gpu
 import sentry_sdk
+from modal import Mount
 
 from runner.engines.vllm import VllmEngine, VllmParams, vllm_image
 from runner.shared.common import stub
@@ -16,6 +18,10 @@ from shared.volumes import (
     models_path,
     models_volume,
 )
+
+# Create mount for modal directory (same as in __init__.py)
+modal_path = Path(__file__).parent.parent.parent
+code_mount = Mount.from_local_dir(modal_path, remote_path="/root")
 
 
 def _make_container(
@@ -88,6 +94,7 @@ def _make_container(
     _VllmContainer.__name__ = name
 
     wrap = stub.cls(
+        mounts=[code_mount],  # Mount modal directory for shared/ access
         volumes={models_path: models_volume},
         image=vllm_image,
         # Default CPU memory is 128 on modal. Request more memory for larger
