@@ -1,4 +1,5 @@
 import modal
+from typing import Union
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -8,9 +9,16 @@ from runner.endpoints.completion import completion as completion_endpoint
 from runner.shared.common import config
 from runner.shared.download import download_model
 from shared.logging import get_logger
-from shared.protocol import CompletionPayload
+from shared.protocol import (
+    CompletionPayload,
+    CompletionRequest,
+)
 
-api_app = FastAPI()
+api_app = FastAPI(
+    title="OpenRouter Runner API",
+    description="OpenAI-compatible API for running LLM models",
+    version="2.0.0",
+)
 logger = get_logger(__name__)
 
 
@@ -25,13 +33,35 @@ async def log_errors(request: Request, call_next):
     return response
 
 
+# Legacy endpoints for backward compatibility
 @api_app.post("/")  # for backwards compatibility with the Modal URL
 @api_app.post("/completion")
-async def post_completion(
+async def post_completion_legacy(
     payload: CompletionPayload,
     request: Request,
     _token: HTTPAuthorizationCredentials = Depends(config.auth),
 ):
+    """
+    Legacy completion endpoint.
+
+    DEPRECATED: Use /v1/completions instead.
+    """
+    return completion_endpoint(request, payload)
+
+
+# OpenAI-compatible endpoints
+@api_app.post("/v1/completions")
+async def post_v1_completions(
+    payload: CompletionRequest,
+    request: Request,
+    _token: HTTPAuthorizationCredentials = Depends(config.auth),
+):
+    """
+    OpenAI-compatible text completions endpoint.
+
+    Follows the OpenAI API specification:
+    https://platform.openai.com/docs/api-reference/completions
+    """
     return completion_endpoint(request, payload)
 
 

@@ -1,5 +1,5 @@
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from modal import Image, enter, method
 from pydantic import BaseModel
@@ -11,10 +11,16 @@ from shared.logging import (
 )
 from shared.protocol import (
     CompletionPayload,
-    ResponseBody,
+    CompletionRequest,
+    CompletionResponse,
+    CompletionChoice,
+    CompletionChunk,
     Usage,
     create_error_text,
+    generate_completion_id,
+    get_current_timestamp,
     sse,
+    sse_done,
 )
 
 from .base import BaseEngine
@@ -22,11 +28,12 @@ from .base import BaseEngine
 logger = get_logger(__name__)
 
 
+# Updated to vLLM 0.6.3+ with latest optimizations
 vllm_image = add_observability(
     Image.from_registry(
         "nvidia/cuda:12.1.0-base-ubuntu22.04",
-        add_python="3.10",
-    ).pip_install("vllm==0.2.6", "sentry-sdk==1.39.1")
+        add_python="3.11",
+    ).pip_install("vllm==0.6.3.post1", "sentry-sdk==2.17.0")
 )
 
 with vllm_image.imports():
@@ -74,31 +81,50 @@ class VllmEngine(BaseEngine):
             self.engine = AsyncLLMEngine.from_engine_args(self.engine_args)
 
     @method()
-    async def generate(self, payload: CompletionPayload, params):
+    async def generate(
+        self,
+        payload: Union[CompletionPayload, CompletionRequest],
+        params,
+    ):
+        """Generate completion using vLLM engine with OpenAI-compatible format."""
         assert self.engine is not None, "Engine not initialized"
 
+        # Handle both legacy and new request formats
+        if isinstance(payload, CompletionPayload):
+            # Legacy format - convert to new format
+            request_id = payload.id
+            prompt = payload.prompt
+            stream = payload.stream
+            model_name = payload.model
+        else:
+            # New OpenAI-compatible format
+            request_id = generate_completion_id()
+            prompt = payload.prompt if isinstance(payload.prompt, str) else payload.prompt[0]
+            stream = payload.stream
+            model_name = payload.model
+
         t_start_inference = time.time()
-        resp = ResponseBody(
-            text="",
-            usage=Usage(prompt_tokens=0, completion_tokens=0),
-        )
+        created_timestamp = get_current_timestamp()
 
         try:
             results_generator = self.engine.generate(
-                payload.prompt, params, payload.id
+                prompt, params, request_id
             )
 
             output = ""
             index = 0
             finish_reason = None
+            prompt_tokens = 0
+            completion_tokens = 0
+
             async for current in results_generator:
                 output = current.outputs[0].text
                 finish_reason = current.outputs[0].finish_reason
-                resp.usage.prompt_tokens = len(current.prompt_token_ids)
-                resp.usage.completion_tokens = len(current.outputs[0].token_ids)
+                prompt_tokens = len(current.prompt_token_ids)
+                completion_tokens = len(current.outputs[0].token_ids)
 
                 # Non-streaming requests continue generating w/o yielding intermediate results
-                if not payload.stream:
+                if not stream:
                     yield " "  # HACK: Keep the connection alive while generating
                     continue
 
@@ -106,26 +132,72 @@ class VllmEngine(BaseEngine):
                 if output and output[-1] == "\ufffd":
                     continue
 
-                # Streaming requests send SSE messages with each new generated part
+                # Streaming: send incremental token in OpenAI format
                 token = output[index:]
                 index = len(output)
-                resp.text = token
-                resp.finish_reason = finish_reason
-                yield sse(resp.json(ensure_ascii=False))
 
-            resp.text = "" if payload.stream else output
-            resp.done = True
-            resp.finish_reason = finish_reason
-            data = resp.json(ensure_ascii=False)
-            yield sse(data) if payload.stream else data
+                chunk = CompletionChunk(
+                    id=request_id,
+                    created=created_timestamp,
+                    model=model_name,
+                    choices=[
+                        CompletionChoice(
+                            text=token,
+                            index=0,
+                            logprobs=None,
+                            finish_reason=finish_reason,
+                        )
+                    ],
+                )
+                yield sse(chunk.model_dump_json())
+
+            # Send final response
+            if stream:
+                # For streaming, send final chunk with finish_reason
+                final_chunk = CompletionChunk(
+                    id=request_id,
+                    created=created_timestamp,
+                    model=model_name,
+                    choices=[
+                        CompletionChoice(
+                            text="",
+                            index=0,
+                            logprobs=None,
+                            finish_reason=finish_reason or "stop",
+                        )
+                    ],
+                )
+                yield sse(final_chunk.model_dump_json())
+                yield sse_done()
+            else:
+                # For non-streaming, send complete response
+                response = CompletionResponse(
+                    id=request_id,
+                    created=created_timestamp,
+                    model=model_name,
+                    choices=[
+                        CompletionChoice(
+                            text=output,
+                            index=0,
+                            logprobs=None,
+                            finish_reason=finish_reason or "stop",
+                        )
+                    ],
+                    usage=Usage(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=prompt_tokens + completion_tokens,
+                    ),
+                )
+                yield response.model_dump_json()
 
             duration = time.time() - t_start_inference
             logger.info(
                 "Completed generation",
                 extra={
                     "model": self.engine_args.model,
-                    "tokens": resp.usage.completion_tokens,
-                    "tps": resp.usage.completion_tokens / duration,
+                    "tokens": completion_tokens,
+                    "tps": completion_tokens / duration if duration > 0 else 0,
                     "duration": duration,
                 },
             )
@@ -134,4 +206,4 @@ class VllmEngine(BaseEngine):
             logger.exception(
                 "Failed generation", extra={"model": self.engine_args.model}
             )
-            yield sse(e) if payload.stream else e
+            yield sse(e) if stream else e

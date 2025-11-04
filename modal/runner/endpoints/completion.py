@@ -1,5 +1,7 @@
+from typing import Union
+
 from fastapi import Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 
 from runner.containers.vllm_unified import (
     QUANTIZED_MODELS,
@@ -10,6 +12,7 @@ from runner.shared.sampling_params import SamplingParams
 from shared.logging import get_logger
 from shared.protocol import (
     CompletionPayload,
+    CompletionRequest,
     create_error_response,
 )
 from shared.volumes import does_model_exist, get_model_path
@@ -17,10 +20,43 @@ from shared.volumes import does_model_exist, get_model_path
 logger = get_logger(__name__)
 
 
+def _get_sampling_params(payload: Union[CompletionPayload, CompletionRequest]):
+    """Extract sampling parameters from either legacy or new format."""
+    if isinstance(payload, CompletionPayload):
+        # Legacy format: params are nested
+        return SamplingParams(**payload.params.dict())
+    else:
+        # New OpenAI format: params are top-level
+        return SamplingParams(
+            max_tokens=payload.max_tokens,
+            temperature=payload.temperature,
+            top_p=payload.top_p,
+            top_k=payload.top_k,
+            n=payload.n,
+            stop=payload.stop,
+            presence_penalty=payload.presence_penalty,
+            frequency_penalty=payload.frequency_penalty,
+            repetition_penalty=payload.repetition_penalty,
+            best_of=payload.best_of,
+            logprobs=payload.logprobs,
+            ignore_eos=payload.ignore_eos,
+            use_beam_search=payload.use_beam_search,
+            skip_special_tokens=payload.skip_special_tokens,
+            min_p=payload.min_p,
+        )
+
+
 def completion(
     request: Request,
-    payload: CompletionPayload,
+    payload: Union[CompletionPayload, CompletionRequest],
 ):
+    """
+    Handle completion requests in both legacy and OpenAI-compatible formats.
+
+    Supports:
+    - Legacy format: {id, prompt, params: {...}, model, stream}
+    - OpenAI format: {model, prompt, temperature, max_tokens, ...}
+    """
     # Some models are served quantized, so we try re-mapping them first
     model_name = payload.model
     if model_name in QUANTIZED_MODELS:
@@ -31,19 +67,22 @@ def completion(
         "Received completion request",
         extra={
             "model": str(model_path),
+            "format": "legacy" if isinstance(payload, CompletionPayload) else "openai",
             "user-agent": request.headers.get("user-agent"),
             "referer": request.headers.get("referer"),
             "ip": request.headers.get("x-real-ip")
             or request.headers.get("x-forwarded-for")
             or request.client.host,
         },
-    )  # use path to match runner
+    )
+
     if not does_model_exist(model_path):
         message = f"Unable to locate model {model_name}"
         logger.error(message)
         return create_error_response(
             status.HTTP_400_BAD_REQUEST,
-            f"Unable to locate model {model_name}",
+            message,
+            "model_not_found",
         )
 
     container = REGISTERED_CONTAINERS.get(model_name)
@@ -52,7 +91,8 @@ def completion(
         logger.error(message)
         return create_error_response(
             status.HTTP_400_BAD_REQUEST,
-            f"Unable to locate container type for model {model_name}",
+            message,
+            "model_not_found",
         )
 
     runner = container()
@@ -60,43 +100,23 @@ def completion(
     stats = runner.generate.get_current_stats()
     logger.info(stats)
     if stats.backlog > BACKLOG_THRESHOLD:
-        message = f"Backlog is too high: {stats.backlog}"
-        logger.warning(message)
+        message = f"Server is currently overloaded. Please try again later."
+        logger.warning(f"Backlog too high: {stats.backlog}")
         return create_error_response(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Backlog is too high: {stats.backlog}",
+            message,
+            "server_overloaded",
         )
-
-    # max_model_len = runner.max_model_len.remote()
-    # input_ids = runner.tokenize_prompt.remote(payload)
-    # token_num = len(input_ids)
-
-    # if payload.params.max_tokens is None:
-    #     max_tokens = max_model_len - token_num
-    # else:
-    #     max_tokens = payload.params.max_tokens
-
-    # is_too_high = (token_num + max_tokens) > max_model_len
-
-    # if is_too_high:
-    #     return create_error_response(
-    #         status.HTTP_400_BAD_REQUEST,
-    #         f"This model's maximum context length is {max_model_len} tokens. "
-    #         f"However, you requested {max_tokens + token_num} tokens "
-    #         f"({token_num} in the messages, "
-    #         f"{max_tokens} in the completion). "
-    #         f"Please reduce the length of the messages or completion.",
-    #     )
 
     try:
-        sampling_params = SamplingParams(
-            # early_stopping=payload.params.early_stopping,
-            # length_penalty=payload.params.length_penalty,
-            **payload.params.dict(),
-        )
+        sampling_params = _get_sampling_params(payload)
     except ValueError as e:
         logger.exception("Invalid sampling params")
-        return create_error_response(status.HTTP_400_BAD_REQUEST, str(e))
+        return create_error_response(
+            status.HTTP_400_BAD_REQUEST,
+            str(e),
+            "invalid_request_error",
+        )
 
     async def generate():
         async for text in runner.generate.remote_gen.aio(
@@ -104,8 +124,25 @@ def completion(
         ):
             yield text
 
-    return StreamingResponse(
-        generate(),
-        # runner.generate.remote_gen(payload, sampling_params),
-        media_type="text/event-stream",
-    )
+    # For streaming, use text/event-stream
+    # For non-streaming, the engine will return JSON directly
+    if payload.stream:
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+        )
+    else:
+        # For non-streaming, we need to collect the response
+        async def get_response():
+            response_text = ""
+            async for chunk in runner.generate.remote_gen.aio(
+                payload, sampling_params
+            ):
+                response_text += chunk
+            return response_text
+
+        # This is handled by the engine now
+        return StreamingResponse(
+            generate(),
+            media_type="application/json",
+        )
