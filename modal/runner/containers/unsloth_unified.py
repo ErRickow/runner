@@ -33,9 +33,13 @@ from shared.volumes import (
     models_volume,
 )
 
-# Create mount for modal directory (same as in __init__.py)
+# Modal 1.0: Add local source code to Unsloth image instead of using Mount
 modal_path = Path(__file__).parent.parent.parent
-code_mount = modal.Mount.from_local_dir(modal_path, remote_path="/root")
+unsloth_image_with_source = unsloth_image.add_local_dir(
+    str(modal_path),
+    remote_path="/root",
+    copy=False  # Mount at runtime for faster dev iteration
+)
 
 
 def _make_unsloth_container(
@@ -46,14 +50,14 @@ def _make_unsloth_container(
     max_seq_length: int = 2048,
     load_in_4bit: bool = True,  # 4-bit for T4
     concurrent_inputs: int = 2,  # Lower for T4
-    max_containers: int = None,
-    container_idle_timeout: int = 10 * 60,  # 10 minutes (save costs)
-    keep_warm: int = None,
+    max_containers_limit: int = None,  # Modal 1.0: renamed from max_containers
+    scaledown_window: int = 10 * 60,  # Modal 1.0: renamed from container_idle_timeout
+    min_containers: int = None,  # Modal 1.0: renamed from keep_warm
 ):
     """
     Create an Unsloth-powered container optimized for T4 GPUs.
 
-    Args:
+    Modal 1.0 parameters:
         name: Container name
         model_name: HuggingFace model ID
         gpu: GPU type (default: "T4" - cheapest option!)
@@ -61,15 +65,15 @@ def _make_unsloth_container(
         max_seq_length: Maximum sequence length
         load_in_4bit: Use 4-bit quantization (recommended for T4)
         concurrent_inputs: Number of concurrent requests
-        max_containers: Maximum number of containers
-        container_idle_timeout: Idle timeout in seconds
-        keep_warm: Number of containers to keep warm
+        max_containers_limit: Maximum number of containers (renamed from max_containers)
+        scaledown_window: Idle timeout in seconds (renamed from container_idle_timeout)
+        min_containers: Number of containers to keep warm (renamed from keep_warm)
     """
 
     # Avoid wasting resources & money in dev
-    if keep_warm and is_env_dev():
-        print(f"Dev environment detected, disabling keep_warm for {name}")
-        keep_warm = None
+    if min_containers and is_env_dev():
+        print(f"Dev environment detected, disabling min_containers for {name}")
+        min_containers = None
 
     class _UnslothContainer(UnslothEngine):
         def __init__(self):
@@ -100,22 +104,25 @@ def _make_unsloth_container(
 
     _UnslothContainer.__name__ = name
 
-    wrap = stub.cls(
-        mounts=[code_mount],  # Mount modal directory for shared/ access
+    # Modal 1.0: Apply @modal.concurrent decorator to the class before wrapping
+    cls_to_wrap = _UnslothContainer
+    if concurrent_inputs > 1:
+        cls_to_wrap = modal.concurrent(max_inputs=concurrent_inputs)(cls_to_wrap)
+
+    # Now apply stub.cls wrapper
+    _cls = stub.cls(
         volumes={models_path: models_volume},
-        image=unsloth_image,
+        image=unsloth_image_with_source,  # Modal 1.0: Image now includes source code
         memory=2048,  # 2GB should be enough for T4
         gpu=gpu,
-        allow_concurrent_inputs=concurrent_inputs,
-        container_idle_timeout=container_idle_timeout,
+        scaledown_window=scaledown_window,  # Modal 1.0: renamed from container_idle_timeout
         timeout=10 * 60,
         secrets=[*get_observability_secrets()],
-        concurrency_limit=max_containers,
-        keep_warm=keep_warm,
+        max_containers=max_containers_limit,  # Modal 1.0: renamed from concurrency_limit
+        min_containers=min_containers,  # Modal 1.0: renamed from keep_warm
         serialized=True,
-    )
+    )(cls_to_wrap)
 
-    _cls = wrap(_UnslothContainer)
     UNSLOTH_CONTAINERS[model_name] = _cls
     return _cls
 
@@ -138,8 +145,8 @@ UnslothContainer_Phi2 = _make_unsloth_container(
     max_seq_length=2048,
     load_in_4bit=True,
     concurrent_inputs=3,
-    max_containers=10,
-    container_idle_timeout=5 * 60,  # 5 min to save costs
+    max_containers_limit=10,  # Modal 1.0
+    scaledown_window=5 * 60,  # Modal 1.0: 5 min to save costs
 )
 
 # Llama-3.2-3B: Latest Llama model, runs great on T4
@@ -152,7 +159,7 @@ UnslothContainer_Llama32_3B = _make_unsloth_container(
     max_seq_length=4096,
     load_in_4bit=True,
     concurrent_inputs=2,
-    max_containers=10,
+    max_containers_limit=10,  # Modal 1.0
 )
 
 # Mistral-7B: Popular 7B model optimized by Unsloth
@@ -165,7 +172,7 @@ UnslothContainer_Mistral7B = _make_unsloth_container(
     max_seq_length=4096,
     load_in_4bit=True,
     concurrent_inputs=2,
-    max_containers=8,
+    max_containers_limit=8,  # Modal 1.0
 )
 
 # Gemma-2B: Google's efficient 2B model
@@ -178,8 +185,8 @@ UnslothContainer_Gemma2B = _make_unsloth_container(
     max_seq_length=2048,
     load_in_4bit=True,
     concurrent_inputs=4,
-    max_containers=15,
-    container_idle_timeout=3 * 60,  # 3 min - very cheap
+    max_containers_limit=15,  # Modal 1.0
+    scaledown_window=3 * 60,  # Modal 1.0: 3 min - very cheap
 )
 
 # Qwen-2.5-3B: Latest Qwen model, excellent quality
@@ -192,7 +199,7 @@ UnslothContainer_Qwen3B = _make_unsloth_container(
     max_seq_length=4096,
     load_in_4bit=True,
     concurrent_inputs=2,
-    max_containers=10,
+    max_containers_limit=10,  # Modal 1.0
 )
 
 

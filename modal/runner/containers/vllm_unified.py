@@ -21,9 +21,13 @@ from shared.volumes import (
     vllm_cache_path,
 )
 
-# Create mount for modal directory (same as in __init__.py)
+# Modal 1.0: Add local source code to vLLM image instead of using Mount
 modal_path = Path(__file__).parent.parent.parent
-code_mount = modal.Mount.from_local_dir(modal_path, remote_path="/root")
+vllm_image_with_source = vllm_image.add_local_dir(
+    str(modal_path),
+    remote_path="/root",
+    copy=False  # Mount at runtime for faster dev iteration
+)
 
 # FAST_BOOT mode: Trade startup time for inference performance
 # - True (dev): Faster startup, slower inference (no CUDA graph compilation)
@@ -36,26 +40,30 @@ def _make_container(
     model_name: str,
     gpu: str = "T4",  # Default to T4 (cheapest option!)
     gpu_count: int = 1,
-    concurrent_inputs: int = 16,  # Reduced for T4 (less VRAM)
-    max_containers: int = None,
-    container_idle_timeout: int = 10 * 60,  # 10 minutes (save costs on T4)
-    keep_warm: int = None,
+    concurrent_inputs: int = 16,  # Concurrent inputs handled by @modal.concurrent
+    max_containers_limit: int = None,  # Modal 1.0: renamed from concurrency_limit
+    scaledown_window: int = 10 * 60,  # Modal 1.0: renamed from container_idle_timeout
+    min_containers: int = None,  # Modal 1.0: renamed from keep_warm
     **vllm_opts,
 ):
     """Helper function to create a container with the given GPU configuration.
 
-    Modal 0.64+ GPU specification:
+    Modal 1.0 parameters:
     - gpu: String like "T4", "A10G", "A100", "any", or "H100"
     - gpu_count: Number of GPUs for tensor parallelism
+    - concurrent_inputs: Number of concurrent requests (used by @modal.concurrent)
+    - max_containers_limit: Max containers to spawn (renamed from concurrency_limit)
+    - scaledown_window: Idle time before scaling down (renamed from container_idle_timeout)
+    - min_containers: Minimum warm containers (renamed from keep_warm)
     - T4 is the cheapest GPU (~$0.60/hour) perfect for GPTQ quantized models
     """
 
     num_gpus = gpu_count
 
     # Avoid wasting resources & money in dev
-    if keep_warm and is_env_dev():
-        print("Dev environment detected, disabling keep_warm for", name)
-        keep_warm = None
+    if min_containers and is_env_dev():
+        print("Dev environment detected, disabling min_containers for", name)
+        min_containers = None
 
     class _VllmContainer(VllmEngine):
         def __init__(self):
@@ -102,26 +110,30 @@ def _make_container(
 
     _VllmContainer.__name__ = name
 
-    wrap = stub.cls(
-        mounts=[code_mount],  # Mount modal directory for shared/ access
+    # Modal 1.0: Apply @modal.concurrent decorator to the class before wrapping
+    cls_to_wrap = _VllmContainer
+    if concurrent_inputs > 1:
+        cls_to_wrap = modal.concurrent(max_inputs=concurrent_inputs)(cls_to_wrap)
+
+    # Now apply stub.cls wrapper
+    _cls = stub.cls(
         volumes={
             models_path: models_volume,
             vllm_cache_path: vllm_cache_volume,  # Cache JIT compilation artifacts
         },
-        image=vllm_image,
+        image=vllm_image_with_source,  # Modal 1.0: Image now includes source code
         # Default CPU memory is 128 on modal. Request more memory for larger
         # windows of vLLM's batch loading weights into GPU memory.
         memory=1024,
         gpu=gpu,
-        allow_concurrent_inputs=concurrent_inputs,
-        container_idle_timeout=container_idle_timeout,
+        scaledown_window=scaledown_window,  # Modal 1.0: renamed from container_idle_timeout
         timeout=10 * 60,
         secrets=[*get_observability_secrets()],
-        concurrency_limit=max_containers,
-        keep_warm=keep_warm,
+        max_containers=max_containers_limit,  # Modal 1.0: renamed from concurrency_limit
+        min_containers=min_containers,  # Modal 1.0: renamed from keep_warm
         serialized=True,  # Modal 0.64+: Required for classes defined in function scope
-    )
-    _cls = wrap(_VllmContainer)
+    )(cls_to_wrap)
+
     REGISTERED_CONTAINERS[model_name] = _cls
     return _cls
 
@@ -137,8 +149,8 @@ VllmContainer_MicrosoftPhi2 = _make_container(
     gpu="T4",  # T4 ($0.60/hour) - GPTQ quantized fits perfectly!
     gpu_count=1,
     concurrent_inputs=16,  # T4 optimized: Small model, good concurrency
-    max_containers=10,  # More containers since T4 is cheaper
-    container_idle_timeout=5 * 60,  # 5 min - save costs
+    max_containers_limit=10,  # Modal 1.0: More containers since T4 is cheaper
+    scaledown_window=5 * 60,  # Modal 1.0: 5 min - save costs
     quantization="GPTQ",
 )
 
@@ -149,8 +161,8 @@ VllmContainer_IntelNeuralChat7B = _make_container(
     gpu="T4",  # T4 ($0.60/hour) - GPTQ 7B fits in 16GB
     gpu_count=1,
     concurrent_inputs=12,  # T4 optimized: Medium model
-    max_containers=8,
-    container_idle_timeout=5 * 60,  # 5 min - save costs
+    max_containers_limit=8,  # Modal 1.0
+    scaledown_window=5 * 60,  # Modal 1.0: 5 min - save costs
     quantization="GPTQ",
 )
 
@@ -161,8 +173,8 @@ VllmContainer_KoboldAIPsyfighter2 = _make_container(
     gpu="T4",  # T4 ($0.60/hour) - GPTQ 13B fits with careful memory management
     gpu_count=1,
     concurrent_inputs=8,  # T4 optimized: Larger model, lower concurrency
-    max_containers=6,
-    container_idle_timeout=5 * 60,  # 5 min - save costs
+    max_containers_limit=6,  # Modal 1.0
+    scaledown_window=5 * 60,  # Modal 1.0: 5 min - save costs
     quantization="GPTQ",
 )
 

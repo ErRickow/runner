@@ -8,7 +8,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
 huggingface-hub = "^0.26.2"
-modal = "^0.64.142"
+modal = "^1.2.1"  # Modal 1.2.1 - same as Google Colab
 scipy = "^1.14.1"
 fastapi = "^0.115.5"
 sentry-sdk = "^2.17.0"

@@ -21,25 +21,28 @@ from shared.volumes import models_path, models_volume
 # Combine all container registries
 ALL_CONTAINERS = {**REGISTERED_CONTAINERS, **UNSLOTH_CONTAINERS}
 
-# Create mount for the modal directory to include both runner/ and shared/
-# This ensures shared/ is accessible in Modal containers
+# Modal 1.0: Add local source code to image instead of using Mount
+# This replaces the deprecated mount= parameter
 modal_path = Path(__file__).parent.parent
-code_mount = modal.Mount.from_local_dir(modal_path, remote_path="/root")
+completion_image = BASE_IMAGE.add_local_dir(
+    str(modal_path),
+    remote_path="/root",
+    copy=False  # Mount at runtime for faster dev iteration
+)
 
 
 @stub.function(
-    image=BASE_IMAGE,
-    mounts=[code_mount],  # Mount modal directory for shared/ access
+    image=completion_image,  # Image now includes source code
     secrets=[
         Secret.from_name("ext-api-key"),
         *get_observability_secrets(),
     ],
     timeout=60 * 15,
-    allow_concurrent_inputs=100,
     volumes={models_path: models_volume},
     cpu=2,
     memory=1024,
 )
+@modal.concurrent(max_inputs=100)  # Modal 1.0: Replaced allow_concurrent_inputs
 @asgi_app()
 def completion():  # named for backwards compatibility with the Modal URL
     from .api import api_app
@@ -47,9 +50,15 @@ def completion():  # named for backwards compatibility with the Modal URL
     return api_app
 
 
+# Modal 1.0: Add source to downloader image too
+downloader_image_with_source = downloader_image.add_local_dir(
+    str(modal_path),
+    remote_path="/root",
+    copy=False
+)
+
 @stub.function(
-    image=downloader_image,
-    mounts=[code_mount],  # Mount modal directory for shared/ access
+    image=downloader_image_with_source,  # Image now includes source code
     timeout=3600,  # 1 hour
     volumes={models_path: models_volume},
     secrets=[
@@ -67,8 +76,7 @@ def download(force: bool = False):
 
 
 @stub.function(
-    image=BASE_IMAGE,
-    mounts=[code_mount],  # Mount modal directory for shared/ access
+    image=completion_image,  # Reuse completion_image (already has source)
     volumes={models_path: models_volume},
     secrets=[
         *get_observability_secrets(),
