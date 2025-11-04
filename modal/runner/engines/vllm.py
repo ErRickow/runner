@@ -28,18 +28,17 @@ from .base import BaseEngine
 logger = get_logger(__name__)
 
 
-# vLLM 0.6.3 - Stable version with torch 2.4.1 compatibility
-# vLLM 0.10.x requires torch 2.8.0 which is not yet stable/available
-# Using proven stable combination: vLLM 0.6.3 + torch 2.4.1
+# vLLM with automatic dependency resolution
+# Let pip install latest compatible versions
 vllm_image = add_observability(
     Image.from_registry(
         "nvidia/cuda:12.1.0-devel-ubuntu22.04",
         add_python="3.11",
     )
     .pip_install(
-        "torch==2.4.1",
-        "vllm==0.6.3",  # Stable version, proven compatibility
-        "sentry-sdk==2.17.0",
+        "vllm",  # Latest compatible version
+        "torch",  # Latest compatible with vllm
+        "sentry-sdk",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})  # Faster model downloads
 )

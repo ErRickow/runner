@@ -30,8 +30,7 @@ logger = get_logger(__name__)
 
 # Unsloth image - optimized for T4 GPUs
 # Unsloth is 2x faster and uses 60% less memory than standard inference
-# Install dependencies in correct order to avoid conflicts
-# Using torch 2.4.1 for compatibility with vLLM
+# Let pip install latest compatible versions automatically
 unsloth_image = add_observability(
     Image.from_registry(
         "nvidia/cuda:12.1.0-base-ubuntu22.04",
@@ -39,24 +38,21 @@ unsloth_image = add_observability(
     )
     # Step 0: Install git (required for pip install from git repos)
     .apt_install("git")
-    # Step 1: Install PyTorch first (required base) - same version as vLLM
+    # Step 1: Install PyTorch and core dependencies (let pip resolve versions)
     .pip_install(
-        "torch==2.4.1",  # Match vLLM version for consistency
-        "torchvision==0.19.1",  # Compatible with torch 2.4.1
+        "torch",  # Latest compatible
+        "torchvision",  # Latest compatible with torch
+        "transformers",  # Latest
+        "accelerate",  # Latest
+        "bitsandbytes",  # Latest
+        "xformers",  # Latest compatible with torch
     )
-    # Step 2: Install core dependencies
-    .pip_install(
-        "transformers==4.46.0",
-        "accelerate==0.34.0",
-        "bitsandbytes==0.44.1",
-        "xformers==0.0.28.post1",  # Compatible with torch 2.4.1
-    )
-    # Step 3: Install Unsloth from git (now all deps are ready)
+    # Step 2: Install Unsloth from git (pip will use compatible versions)
     .pip_install(
         "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git",
     )
-    # Step 4: Add observability
-    .pip_install("sentry-sdk==2.17.0")
+    # Step 3: Add observability
+    .pip_install("sentry-sdk")
 )
 
 with unsloth_image.imports():
