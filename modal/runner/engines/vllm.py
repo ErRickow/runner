@@ -28,17 +28,17 @@ from .base import BaseEngine
 logger = get_logger(__name__)
 
 
-# Updated to vLLM 0.10.2 with latest optimizations
-# Using CUDA 12.4 for better compatibility with latest vLLM
-# Torch 2.4.1 is stable and compatible with vLLM 0.10.2
+# vLLM 0.6.3 - Stable version with torch 2.4.1 compatibility
+# vLLM 0.10.x requires torch 2.8.0 which is not yet stable/available
+# Using proven stable combination: vLLM 0.6.3 + torch 2.4.1
 vllm_image = add_observability(
     Image.from_registry(
-        "nvidia/cuda:12.4.0-devel-ubuntu22.04",
+        "nvidia/cuda:12.1.0-devel-ubuntu22.04",
         add_python="3.11",
     )
     .pip_install(
-        "torch==2.4.1",  # Stable version compatible with vLLM 0.10.2
-        "vllm==0.10.2",
+        "torch==2.4.1",
+        "vllm==0.6.3",  # Stable version, proven compatibility
         "sentry-sdk==2.17.0",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})  # Faster model downloads
